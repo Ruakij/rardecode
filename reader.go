@@ -243,7 +243,7 @@ func (f *packedFileReader) bytes() ([]byte, error) {
 	return b, err
 }
 
-func newPackedFileReader(r io.Reader, opts []Option) (*packedFileReader, error) {
+func newPackedFileReader(r []io.Reader, opts []Option) (*packedFileReader, error) {
 	v, err := newVolume(r, opts)
 	if err != nil {
 		return nil, err
@@ -459,8 +459,14 @@ func (r *Reader) nextFile() error {
 
 // NewReader creates a Reader reading from r.
 // NewReader only supports single volume archives.
-// Multi-volume archives must use OpenReader.
+// Multi-volume archives must use OpenReader or NewMultiReader
 func NewReader(r io.Reader, opts ...Option) (*Reader, error) {
+	return NewMultiReader([]io.Reader{r}, opts...)
+}
+
+// NewReader creates a Reader reading from r readers
+// Must specify all volume readers in correct order or must use OpenReader
+func NewMultiReader(r []io.Reader, opts ...Option) (*Reader, error) {
 	pr, err := newPackedFileReader(r, opts)
 	if err != nil {
 		return nil, err

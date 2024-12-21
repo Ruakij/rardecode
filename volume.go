@@ -53,7 +53,8 @@ func Password(pass string) Option {
 // volume extends a fileBlockReader to be used across multiple
 // files in a multi-volume archive
 type volume struct {
-	f    io.Reader     // current file handle
+	f    []io.Reader   // reader handles
+	i    int           // current reader index
 	br   *bufio.Reader // buffered reader for current volume file
 	dir  string        // current volume directory path
 	file string        // current volume file name
@@ -72,13 +73,13 @@ func (v *volume) setOpts(opts []Option) {
 
 func (v *volume) setBuffer() {
 	if v.br != nil {
-		v.br.Reset(v.f)
+		v.br.Reset(v.f[v.i])
 	} else if size := v.opt.bsize; size > 0 {
-		v.br = bufio.NewReaderSize(v.f, size)
-	} else if br, ok := v.f.(*bufio.Reader); ok {
+		v.br = bufio.NewReaderSize(v.f[v.i], size)
+	} else if br, ok := v.f[v.i].(*bufio.Reader); ok {
 		v.br = br
 	} else {
-		v.br = bufio.NewReader(v.f)
+		v.br = bufio.NewReader(v.f[v.i])
 	}
 }
 
@@ -97,7 +98,7 @@ func (v *volume) openFile(file string) error {
 	if err != nil {
 		return err
 	}
-	v.f = f
+	v.f[v.i] = f
 	v.file = file
 	v.setBuffer()
 	return nil
@@ -118,18 +119,18 @@ func (v *volume) init() error {
 func (v *volume) clone() *volume {
 	nv := new(volume)
 	*nv = *v
-	nv.f = nil
+	nv.f[v.i] = nil
 	nv.br = nil
 	return nv
 }
 
 func (v *volume) Close() error {
-	// v.f may be nil if os.Open fails in next().
+	// v.f[v.i] may be nil if os.Open fails in next().
 	// We only close if we opened it (ie. v.name provided).
-	if v.f != nil && len(v.file) > 0 {
-		if c, ok := v.f.(io.Closer); ok {
+	if v.f[v.i] != nil && len(v.file) > 0 {
+		if c, ok := v.f[v.i].(io.Closer); ok {
 			err := c.Close()
-			v.f = nil // set to nil so we can only close v.f once
+			v.f[v.i] = nil // set to nil so we can only close v.f[v.i] once
 			return err
 		}
 	}
@@ -142,10 +143,10 @@ func (v *volume) discard(n int64) error {
 	l := int64(v.br.Buffered())
 	if n <= l {
 		_, err = v.br.Discard(int(n))
-	} else if sr, ok := v.f.(io.Seeker); ok {
+	} else if sr, ok := v.f[v.i].(io.Seeker); ok {
 		n -= l
 		_, err = sr.Seek(n, io.SeekCurrent)
-		v.br.Reset(v.f)
+		v.br.Reset(v.f[v.i])
 	} else {
 		for n > math.MaxInt && err == nil {
 			_, err = v.br.Discard(math.MaxInt)
@@ -364,19 +365,28 @@ func (v *volume) openNextFile() error {
 }
 
 func (v *volume) next() error {
-	if len(v.file) == 0 {
-		return ErrFileNameRequired
-	}
 	err := v.Close()
 	if err != nil {
 		return err
 	}
-	v.f = nil
-	err = v.openNextFile() // Open next volume file
-	v.num++
-	if err != nil {
-		return err
+
+	v.f[v.i] = nil
+	if v.i < len(v.f) { // Select next reader if exists
+		v.i++
+		v.setBuffer()
+	} else { // Fallback to file
+		if len(v.file) == 0 {
+			return ErrFileNameRequired
+		}
+
+		err = v.openNextFile() // Open next volume file
+		if err != nil {
+			return err
+		}
 	}
+
+	v.num++
+
 	err = v.findSig()
 	if err != nil {
 		_ = v.Close()
@@ -384,7 +394,7 @@ func (v *volume) next() error {
 	return err
 }
 
-func newVolume(r io.Reader, opts []Option) (*volume, error) {
+func newVolume(r []io.Reader, opts []Option) (*volume, error) {
 	v := &volume{f: r}
 	v.setOpts(opts)
 	v.setBuffer()
